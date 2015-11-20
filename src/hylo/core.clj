@@ -7,62 +7,165 @@
 (defn id2 [x y] x)
 (defn id3 [x y] x)
 
-(defmacro compile [body]
+(defmacro hylo [body]
   `(type-of root-context ~body))
 
-(def root-context {`sqrt
-                   {:class :fn
-                    :constraints {}
-                    :return Double
-                    :arguments [Double]}
+(def root-context {:assumptions {`sqrt
+                                 {:class :fn
+                                  :constraints {}
+                                  :return Double
+                                  :arguments [Double]}
 
-                   `id
-                   (let [a (gensym)]
-                     {:class :fn
-                      :constraints {}
-                      :return a
-                      :arguments [a]})
+                                 `id
+                                 {:class :fn
+                                  :constraints {}
+                                  :return :a
+                                  :arguments [:a]}
 
-                   `if
-                   (let [a (gensym)]
-                     {:class :fn
-                      :constraints {}
-                      :return a
-                      :arguments [Boolean a a]})
+                                 ;; `if
+                                 ;; (let [a (gensym)]
+                                 ;;   {:class :fn
+                                 ;;    :constraints {}
+                                 ;;    :return a
+                                 ;;    :arguments [Boolean a a]})
 
-                   `id2
-                   (let [a (gensym)
-                         b (gensym)]
-                     {:class :fn
-                      :constraints {}
-                      :return a
-                      :arguments [a b]})
+                                 ;; `id2
+                                 ;; (let [a (gensym)
+                                 ;;       b (gensym)]
+                                 ;;   {:class :fn
+                                 ;;    :constraints {}
+                                 ;;    :return a
+                                 ;;    :arguments [a b]})
 
-                   `id3
-                   (let [a (gensym)]
-                     {:class :fn
-                      :constraints {}
-                      :return a
-                      :arguments [a a]})})
+                                 ;; `id3
+                                 ;; (let [a (gensym)]
+                                 ;;   {:class :fn
+                                 ;;    :constraints {}
+                                 ;;    :return a
+                                 ;;    :arguments [a a]})
+                                 }})
 
-(defn type-of [context expr]
-  (cond (or (instance? Boolean expr)
-            (number? expr)
-            (string? expr)
-            (keyword? expr))
-        (class expr)
+(defn context-contains? [context key]
+  (cond
+    (contains? (:assumptions context) key)
+    true
 
-        (seq? expr)
-        (type-of-form context (first expr) (rest expr))
+    (:parent context)
+    (context-contains? (:parent context) key)
 
-        (contains? context expr)
-        (context expr)
+    :else
+    false))
 
-        (= `fn expr)
-        (name expr)
+(defn context-get [context key]
+  (cond
+    (contains? (:assumptions context) key)
+    ((:assumptions context) key)
 
-        :else
-        (throw (Exception. (str "Unknown type: [" expr "]")))))
+    (:parent context)
+    (context-contains? (:parent context) key)
+
+    :else
+    nil))
+
+;; (defn context-set [context key type]
+;;   (cond
+;;     (contains? (:assumptions context) key)
+;;     (let [cur ((:assumptions context) key)]
+;;       (if (nil? cur)
+;;         (update-in context [:assumptions key] (constantly type))
+;;         (if (= cur type) context
+;;             (throw (Exception. (str "Could not unify [" cur "] with [" type "]"))))))
+
+;;     (:parent context)
+;;     (assoc context :parent (context-set (:parent context key type)))
+
+;;     :else
+;;     (throw (Exception. (str "Missing key: " key)))))
+
+(defn context-set [context key type]
+  (cond
+    (contains? (:assumptions context) key)
+    (update-in context [:assumptions key] (constantly type))
+
+    (:parent context)
+    (assoc context :parent (context-set (:parent context key type)))
+
+    :else
+    (throw (Exception. (str "Missing key: " key)))))
+
+(declare unify)
+
+(defn unify-current [context a b]
+  "a is defined on this level, so be is either on this or a parent
+  level, so set a to equal b"
+  (let [cur-a (context-get context a)]
+    (cond
+      (nil? cur-a)
+      (context-set context a (or (context-get context b) b))
+
+      (symbol? cur-a)
+      (let [ctx-prime (unify cur-a b)]
+        (context-set ctx-prime a (or (context-get ctx-prime b) b)))
+
+      :else
+      (context-set context b cur-a))))
+
+(defn unify [context a b]
+  (cond
+    (contains? (:assumptions context) a) (unify-current context a b)
+    (contains? (:assumptions context) b) (unify-current context b a)
+    (:parent context) (unify (:parent context) a b)
+    :else (throw (Exception. (str "Could not find [" a "] or [" b "] to unify")))
+    ))
+
+(defn type-of-apply [parent-context f args]
+  (let [f-type (:type (type-of parent-context f))
+        free-types (->> (:arguments f-type) (filter keyword?) (into #{}))
+        mapping (zipmap free-types (repeatedly gensym))
+
+        context {:parent parent-context
+                 :assumptions (zipmap (vals mapping)
+                                      (repeat nil))}
+
+        args-type (map (partial type-of context) args)
+
+        _ (if-not (and (map? f-type) (= (:class f-type) :fn))
+            (throw (Exception. (str "Cannot apply '" f "' of type [" f-type "]"))))
+
+        ;; poly (reduce
+        ;;       (fn [c [a v]]
+        ;;         (cond
+        ;;           (instance? Class a)
+        ;;           (if (= a v) c
+        ;;               (throw (Exception. (str "type mismatch, [" a "] != [" v "]"))))
+
+        ;;           (symbol? a)
+        ;;           (if (contains? c a)
+        ;;             (if (= (c a) v) c
+        ;;                 (throw (Exception. (str "type mismatch, [" (c a) "] != [" v "]"))))
+        ;;             (assoc c a v))
+
+        ;;           :else (throw (Exception. (str "Unsupported argument type [" a "]")))))
+        ;;       context
+        ;;       (map vector (:arguments f-type) args-type))
+
+        ctx-prime (reduce
+                   (fn [c [a v]] (unify c a v))
+                   context
+                   (map vector (:arguments f-type) args-type))]
+
+    ;; context
+    ;; f-type
+    ;; mapping
+    ctx-prime
+
+    #_(if (symbol? (:return f-type))
+        (poly (:return f-type))
+        (:return f-type))
+    ))
+
+(type-of root-context `(sqrt 3.14))
+(type-of root-context `(id 3.14))
 
 (defn type-of-form [context f args]
   (cond
@@ -73,34 +176,23 @@
     (type-of-apply context f args)
     ))
 
-(defn type-of-apply [context f args]
-  (let [f-type (type-of context f)
-        args-type (map (partial type-of context) args)
+(defn type-of [context expr]
+  (cond (or (instance? Boolean expr)
+            (number? expr)
+            (string? expr)
+            (keyword? expr))
+        {:type (class expr)
+         :context context}
 
-        _ (if-not (and (map? f-type) (= (:class f-type) :fn))
-            (throw (Exception. (str "Cannot apply '" f "' of type [" f-type "]"))))
+        (seq? expr)
+        (type-of-form context (first expr) (rest expr))
 
-        poly (reduce
-              (fn [p [a v]]
-                (cond
-                  (instance? Class a)
-                  (if (= a v) p
-                      (throw (Exception. (str "type mismatch, [" a "] != [" v "]"))))
+        (context-contains? context expr)
+        {:type (context-get context expr)
+         :context context}
 
-                  (symbol? a)
-                  (if (contains? p a)
-                    (if (= (p a) v) p
-                        (throw (Exception. (str "type mismatch, [" (p a) "] != [" v "]"))))
-                    (assoc p a v))
-
-                  :else (throw (Exception. (str "Unsupported argument type [" a "]")))
-                  ))
-              {}
-              (map vector (:arguments f-type) args-type))]
-
-    (if (symbol? (:return f-type))
-      (poly (:return f-type))
-      (:return f-type))))
+        :else
+        (throw (Exception. (str "Unknown type: [" expr "]")))))
 
 (type-of root-context `(fn [x] x))
 
@@ -125,4 +217,4 @@
 
 (class `(sqrt 3.14))
 
-(compile (sqrt 3.14))
+(hylo (sqrt 3.14))
