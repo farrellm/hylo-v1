@@ -10,25 +10,25 @@
 (defmacro hylo [body]
   `(type-of root-context '~body))
 
-(def root-context {:assumptions {`sqrt
+(def root-context {:assumptions {#'sqrt
                                  {:class :fn
                                   :constraints {}
                                   :return Double
                                   :arguments [Double]}
 
-                                 `id
+                                 #'id
                                  {:class :fn
                                   :constraints {}
                                   :return :a
                                   :arguments [:a]}
 
-                                 ;; `if
+                                 ;; #'if
                                  ;; {:class :fn
                                  ;;  :constraints {}
                                  ;;  :return :a
                                  ;;  :arguments [Boolean :a :a]}
 
-                                 ;; `id2
+                                 ;; #'id2
                                  ;; (let [a (gensym)
                                  ;;       b (gensym)]
                                  ;;   {:class :fn
@@ -36,7 +36,7 @@
                                  ;;    :return a
                                  ;;    :arguments [a b]})
 
-                                 ;; `id3
+                                 ;; #'id3
                                  ;; (let [a (gensym)]
                                  ;;   {:class :fn
                                  ;;    :constraints {}
@@ -137,12 +137,16 @@
         {:type (context-get context expr)
          :context context}
 
+        (and (symbol? expr) (context-contains? context (resolve expr)))
+        {:type (context-get context (resolve expr))
+         :context context}
+
         :else
         (throw (Exception. (str "Unknown type: [" expr "]")))))
 
 (defn type-of-form [context f args]
   (cond
-    (= f `fn)
+    (= f 'fn)
     :yay
 
     :else
@@ -174,26 +178,26 @@
      :context (:parent ctx-prime)}))
 
 
-(type-of root-context `(fn [x] x))
+(type-of root-context '(fn [x] x))
 
-;; (:type (type-of root-context `(if true :a :b)))
+;; (:type (type-of root-context '(if true :a :b)))
 
-(:type (type-of root-context `(id 3.14)))
-(:type (type-of root-context `(id 8)))
-;; (type-of root-context `(id2 :a 8))
-;; (type-of root-context `(id3 :a :b))
-;; (type-of root-context `(id3 :a 8))
+(:type (type-of root-context '(id 3.14)))
+(:type (type-of root-context '(id 8)))
+;; (type-of root-context '(id2 :a 8))
+;; (type-of root-context '(id3 :a :b))
+;; (type-of root-context '(id3 :a 8))
 
-(:type (type-of root-context `(sqrt 3.14)))
-;; (type-of root-context `(sqrt 3))
+(:type (type-of root-context '(sqrt 3.14)))
+;; (type-of root-context '(sqrt 3))
 
-;; (type-of root-context `(8 3.14))
+;; (type-of root-context '(8 3.14))
 
-(:type (type-of root-context `3.14))
-(:type (type-of root-context `sqrt))
+(:type (type-of root-context '3.14))
+(:type (type-of root-context 'sqrt))
 
-(:type (type-of root-context `id))
-;; (type-of root-context `id2)
-;; (type-of root-context `id3)
+(:type (type-of root-context 'id))
+;; (type-of root-context 'id2)
+;; (type-of root-context 'id3)
 
-;; (hylo (sqrt 3.14))
+(:type (hylo (sqrt 3.14)))
