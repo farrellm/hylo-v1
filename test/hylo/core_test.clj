@@ -10,28 +10,26 @@
       (is (= 0 1))))
 
 (deftest simple
-  (is (= clojure.lang.Keyword (:type (hylo :x))))
-  (is (= Boolean (:type (hylo true))))
-  (is (= Long (:type (hylo 3))))
-  (is (= Double (:type (hylo 3.14))))
+  (is (= (mk-prim clojure.lang.Keyword) (:type (hylo :x))))
+  (is (= (mk-prim Boolean) (:type (hylo true))))
+  (is (= (mk-prim Long) (:type (hylo 3))))
+  (is (= (mk-prim Double) (:type (hylo 3.14))))
 
-  (is (= {:class :fn, :constraints {}, :return Double, :arguments [Double]}
-         (:type (hylo hylo.core/sqrt))))
-  (is (= {:class :fn, :constraints {}, :return :a, :arguments [:a]}
-         (:type (hylo hylo.core/id)))))
+  (is (= (mk-fn Double [Double]) (:type (hylo hylo.core/sqrt))))
+  (is (= (mk-fn :a [:a]) (:type (hylo hylo.core/id)))))
 
 (deftest apply
-  (is (= Long (:type (hylo (hylo.core/id 8)))))
-  (is (= Double (:type (hylo (hylo.core/id 3.14)))))
-  (is (= Double (:type (hylo (hylo.core/sqrt 3.14)))))
-  (is (= clojure.lang.Keyword (:type (hylo (if true :a :b))))))
+  (is (= (mk-prim Long) (:type (hylo (hylo.core/id 8)))))
+  (is (= (mk-prim Double) (:type (hylo (hylo.core/id 3.14)))))
+  (is (= (mk-prim Double) (:type (hylo (hylo.core/sqrt 3.14)))))
+  (is (= (mk-prim clojure.lang.Keyword) (:type (hylo (if true :a :b))))))
 
 (deftest function
-  (is (= {:class :fn, :constraints {}, :return :a, :arguments [:a]}
+  (is (= (mk-fn :a [:a])
          (:type (hylo (fn [x] x)))))
-  (is (= {:class :fn, :constraints {}, :return Double, :arguments [Double]}
+  (is (= (mk-fn Double [Double])
          (:type (hylo (fn [x] (hylo.core/sqrt x))))))
-  (is (= {:class :fn, :constraints {}, :return :a, :arguments [:a :a]}
+  (is (= (mk-fn :a [:a :a])
          (:type (hylo (fn [x y] (if true x y))))))
-  (is (= {:class :fn, :constraints {}, :return Double, :arguments [Double Double Boolean]}
+  (is (= (mk-fn Double [Double Double Boolean])
          (:type (hylo (fn [x y z] (if z x (hylo.core/sqrt y))))))))

@@ -1,32 +1,48 @@
 (ns hylo.core
-  (require [clojure.core.match :refer [match]]))
+  (require [clojure.core.match :refer [match]]
+           [clojure.pprint :refer [pprint]]))
 
 (defn sqrt [x] (Math/sqrt x))
 (defn id [x] x)
 
-(defn id2 [x y] x)
-(defn id3 [x y] x)
-
 (defmacro hylo [body]
   `(type-of root-context '~body))
 
-(def root-context {:assumptions {#'sqrt
-                                 {:class :fn
-                                  :constraints {}
-                                  :return Double
-                                  :arguments [Double]}
+(defn mk-prim [prim]
+  {:class :primitive
+   :type prim})
 
-                                 #'id
-                                 {:class :fn
-                                  :constraints {}
-                                  :return :a
-                                  :arguments [:a]}
+(defn mk-ref [tgt]
+  {:class :ref
+   :target tgt})
 
-                                 'if
-                                 {:class :fn
-                                  :constraints {}
-                                  :return :a
-                                  :arguments [Boolean :a :a]}}})
+(defn mk-poly
+  ([lbl] (mk-poly lbl []))
+  ([lbl constraints] {:class :polymorphic
+                      :label lbl
+                      :constraints constraints}))
+(defn mk-unknown
+  ([] (mk-unknown []))
+  ([constraints] {:class :unknown
+                  :constraints constraints}))
+
+(defn mk-type [x]
+  (cond
+    (map? x) x
+    (class? x) (mk-prim x)
+    (keyword? x) (mk-poly x)
+    :else (throw (Exception. (str "Can't mk-type " x)))))
+
+(defn mk-fn
+  ([ret args] {:class :fn
+               :constraints {}
+               :return (mk-type ret)
+               :arguments (map mk-type args)}))
+
+(def root-context {:assumptions {#'sqrt (mk-fn Double [Double])
+                                 #'id (mk-fn :a [:a])
+                                 'if (mk-fn :a [Boolean :a :a])
+                                 }})
 
 (def type-keywords
   (->> (int \a) (iterate inc) (map (comp keyword str char))))
@@ -48,31 +64,34 @@
     :else
     false))
 
-(defn context-get [context k]
-  (cond
-    (contains? (:assumptions context) k)
-    (let [value ((:assumptions context) k)]
-      (or (context-get context value) value))
+(defn context-get
+  ([context] #(context-get context %))
+  ([context k]
+   (or ((:assumptions context) k)
+       (when (:parent context)
+         (context-get (:parent context) k)))))
 
-    (:parent context)
-    (context-get (:parent context) k)
+(defn context-deref [context k]
+  (match [(context-get context k)]
+    [{:class :ref, :target tgt}]
+    (context-deref context tgt)
 
-    :else
-    nil))
+    [t]
+    t))
 
 (defn context-set [context k t]
   (cond
     (contains? (:assumptions context) k)
-    (let [cur (context-get context k)]
-      (cond
-        (or (nil? cur) (symbol? cur))
-        (update-in context [:assumptions k] (constantly t))
+    (match [(context-get context k)]
+      [u :guard (partial = t)]
+      context
 
-        (= t cur)
-        context
+      [{:class :unknown, :constraints []}]
+      (assoc-in context [:assumptions k] t)
 
-        :else
-        (throw (Exception. (str "Type mismatch: expected [" t "], found [" cur "]")))))
+      [u]
+      (throw (Exception. (str "Type mismatch: expected " [t]
+                              ", found " [u]))))
 
     (:parent context)
     (update-in context [:parent] context-set k t)
@@ -80,66 +99,67 @@
     :else
     (throw (Exception. (str "Missing key: " k)))))
 
-(defn context-specify [context k t]
-  (if-let [v (context-get context k)]
-    (if (= v t) context
-        (throw (Exception. (str "Type " k " is " v ", cannot be " t))))
-    (let [a (into {} (map (fn [[q v :as e]] (if (= v k) [q t] e))
-                          (:assumptions context)))]
-      (if (contains? (:assumptions context) k)
-        {:assumptions (assoc a k t)
-         :parent (:parent context)}
-        {:assumptions a
-         :parent (context-specify (:parent context) k t)}))))
-
 (defn context-sort [context a b]
   (cond
     (contains? (:assumptions context) a) [a b]
     (contains? (:assumptions context) b) [b a]
     :else (context-sort (:parent context) a b)))
 
+(declare unify)
+
+(defn unify-ref [context tgt b]
+  (let [next (context-get context tgt)]
+    (match [next]
+      [{:class :primitive}]
+      (unify context next b)
+
+      [{:class :unknown, :constraints []}]
+      (context-set context tgt b)
+
+      [{:class :ref, :target tgt-prime}]
+      (recur context tgt-prime b)
+
+      :else
+      (throw (Exception.
+              (str "Can't handle ref to " next))))))
+
+(defn unify-refs [context [a tgt-a] [b tgt-b :as b-set]]
+  (match [(context-get context tgt-a) (context-get context tgt-b)]
+    [({:class :ref, :target tgt-a-prime} :as a-prime)
+     {:class :unknown, :constraints []}]
+    (recur context [a-prime tgt-a-prime] b-set)
+
+    [{:class :unknown, :constraints []} {:class :unknown, :constraints []}]
+    (context-set context tgt-a b)))
+
 (defn unify [context a b]
-  (prn [:unify a b])
-  (cond
-    (= a b)
-    context
+  (match [a b]
+    [{:class :primitive, :type t1} {:class :primitive, :type t2}]
+    (if (= t1 t2) context
+        (throw (Exception.
+                (str "Type mismatch, expected " t1 " found " t2))))
 
-    (and (class? a) (symbol? b))
-    (if-let [b-val (context-get context b)]
-      (unify context a b-val)
-      (context-specify context b a))
+    [{:class :primitive} {:class :ref}]
+    (recur context b a)
 
-    (and (symbol? a) (class? b))
-    (unify context b a)
+    [{:class :ref, :target tgt} {:class :primitive}]
+    (unify-ref context tgt b)
 
-    (and (symbol? a) (symbol? b))
-    (let [a-val (context-get context a)
-          b-val (context-get context b)]
-      (prn [a-val b-val])
-      (prn context)
-      (cond
-        (and (nil? a-val) (nil? b-val))
-        (apply context-specify context (context-sort context a b))
+    [{:class :primitive} {:class :ref}]
+    (recur context b a)
 
-        (and a-val (nil? b-val))
-        (context-specify context b a-val)
-
-        (and (nil? a-val) b-val)
-        (context-specify context a b-val)
-
-        (and a-val b-val)
-        (apply context-specify context (context-sort context a-val b-val))))
+    [{:class :ref, :target tgt-a} {:class :ref, :target tgt-b}]
+    (unify-refs context [a tgt-a] [b tgt-b])
 
     :else
-    (throw (Exception. (str "Could not unify [" a "] with [" b "]")))))
+    (throw (Exception. (str "Could not unify " [a] " with " [b])))))
 
 (declare type-of-form)
 (declare type-of-apply)
 
 (defn type-of [context expr]
-  (prn :type-of expr)
   (cond (primitive? expr)
-        {:type (class expr)
+        {:type (mk-prim (class expr))
          :context context}
 
         (seq? expr)
@@ -161,39 +181,63 @@
   (cond
     (= f 'fn)
     (let [[ps expr] args
-          mapping (zipmap ps (repeatedly gensym))
-          ctx-prime {:parent parent-context
-                     :assumptions (merge mapping
-                                         (zipmap (vals mapping) (repeat nil)))}
+          mapping (zipmap ps (map #(gensym (str % "_")) ps))
+
+          refs (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
+          ctx {:parent parent-context
+               :assumptions (zipmap (map :target (vals refs))
+                                    (repeatedly mk-unknown))}
+
+          ctx-prime {:parent ctx
+                     :assumptions refs}
+
           {:keys [type context]} (type-of ctx-prime expr)
-          free (remove (partial context-get context) (vals mapping))
+
+          free (remove #(not= :unknown (:class (context-deref context %))) ps)
           free-mapping (zipmap free type-keywords)
 
-          calc-type #(if (class? %) %
-                         (or (context-get context %)
-                             (free-mapping %)
-                             %))]
-      {:type {:class :fn
-              :constraints {}
-              :return (calc-type type)
-              :arguments (map (comp calc-type (partial context-get context)) ps)}
-       :context (:parent context)}
-      )
+          calc-type (fn [t]
+                      (match [t]
+                        [s :guard symbol?]
+                        (recur (context-deref context s))
+
+                        [{:class :primitive}]
+                        t
+
+                        [{:class :ref}]
+                        (recur (context-deref context (:target t)))
+
+                        [{:class :unknown}]
+                        (free-mapping
+                         (some #(and (= t (context-deref context %)) %) free))))]
+      {:type (mk-fn (calc-type type) (map calc-type ps))
+       :context (:parent context)})
 
     :else
     (type-of-apply parent-context f args)))
 
 (defn type-of-apply [parent-context f args]
   (let [f-type (:type (type-of parent-context f))
-        free-types (->> (:arguments f-type) (filter keyword?) (into #{}))
+        _ (if-not (and (map? f-type) (= (:class f-type) :fn))
+            (throw (Exception. (str "Cannot apply '" f
+                                    "' of type " [f-type]))))
+
+        free-types (->> (:arguments f-type)
+                        (filter #(= (:class %) :polymorphic))
+                        (map :label)
+                        (into #{}))
         mapping (zipmap free-types
-                        (map #(gensym (str f "_"(name %) "_")) free-types))
+                        (map #(gensym (str f "_"(name %) "_"))
+                             free-types))
 
+        refs (zipmap (vals mapping) (repeatedly #(mk-ref (gensym))))
         ctx {:parent parent-context
-             :assumptions (zipmap (vals mapping)
-                                  (repeat nil))}
+             :assumptions
+             (into refs (zipmap (map :target (vals refs))
+                                (repeatedly mk-unknown)))}
 
-        param-types (map #(or (mapping %) %) (:arguments f-type))
+        param-types (map #(or (mapping (:label %)) %)
+                         (:arguments f-type))
 
         {:keys [arg-types ctx-prime]}
         (reduce (fn [{:keys [arg-types ctx-prime]} arg]
@@ -204,15 +248,16 @@
                  :arg-types []}
                 args)
 
-        _ (if-not (and (map? f-type) (= (:class f-type) :fn))
-            (throw (Exception. (str "Cannot apply '" f "' of type [" f-type "]"))))
-
         ctx-prime (reduce
-                   (fn [c [a v]] (unify c a v))
+                   (fn [c [p a]]
+                     (unify c (if (symbol? p) (context-get c p) p)
+                            a))
                    ctx-prime
                    (map vector param-types arg-types))]
 
-    {:type (if (keyword? (:return f-type))
-             ((:assumptions ctx-prime) (mapping (:return f-type)))
+    {:type (if (= :polymorphic (get-in f-type [:return :class]))
+             (->> (get-in f-type [:return :label])
+                  mapping
+                  (context-deref ctx-prime))
              (:return f-type))
-     :context (:parent ctx-prime)}))
+     :context ctx-prime}))
