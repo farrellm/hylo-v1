@@ -32,4 +32,6 @@
   (is (= (mk-fn :a [:a :a])
          (:type (hylo (fn [x y] (if true x y))))))
   (is (= (mk-fn Double [Double Double Boolean])
-         (:type (hylo (fn [x y z] (if z x (hylo.core/sqrt y))))))))
+         (:type (hylo (fn [x y z] (if z x (hylo.core/sqrt y)))))))
+  (is (= (mk-fn Double [Double Double Boolean])
+         (:type (hylo (fn [x y z] (if z (hylo.core/sqrt y) x)))))))

@@ -72,26 +72,26 @@
          (context-get (:parent context) k)))))
 
 (defn context-deref [context k]
-  (match [(context-get context k)]
-    [{:class :ref, :target tgt}]
-    (context-deref context tgt)
-
-    [t]
-    t))
+  (let [t (context-get context k)]
+    (if (= :ref (:class t))
+      (context-deref context (:target t))
+      t)))
 
 (defn context-set [context k t]
   (cond
     (contains? (:assumptions context) k)
-    (match [(context-get context k)]
-      [u :guard (partial = t)]
-      context
+    (let [k-type (context-get context k)]
+      (cond
+        (= k-type t)
+        context
 
-      [{:class :unknown, :constraints []}]
-      (assoc-in context [:assumptions k] t)
+        (and (= :unknown (:class k-type))
+             (= [] (:constraints k-type)))
+        (assoc-in context [:assumptions k] t)
 
-      [u]
-      (throw (Exception. (str "Type mismatch: expected " [t]
-                              ", found " [u]))))
+        :else
+        (throw (Exception. (str "Type mismatch: expected " [t]
+                                ", found " [k-type])))))
 
     (:parent context)
     (update-in context [:parent] context-set k t)
@@ -123,11 +123,19 @@
       (throw (Exception.
               (str "Can't handle ref to " next))))))
 
-(defn unify-refs [context [a tgt-a] [b tgt-b :as b-set]]
+(defn unify-refs [context [a tgt-a :as a-set] [b tgt-b :as b-set]]
   (match [(context-get context tgt-a) (context-get context tgt-b)]
     [({:class :ref, :target tgt-a-prime} :as a-prime)
      {:class :unknown, :constraints []}]
     (recur context [a-prime tgt-a-prime] b-set)
+
+    ;; [{:class :unknown, :constraints []}
+    ;;  ({:class :ref, :target tgt-a-prime} :as a-prime)]
+    ;; (recur context b-set a-set)
+
+    [({:class :primitive} :as a-prime)
+     {:class :unknown, :constraints []}]
+    (context-set context tgt-b a-prime)
 
     [{:class :unknown, :constraints []} {:class :unknown, :constraints []}]
     (context-set context tgt-a b)))
