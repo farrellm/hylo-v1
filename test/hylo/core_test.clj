@@ -1,9 +1,7 @@
 (ns hylo.core-test
+  (:refer-clojure :exclude [apply])
   (:require [clojure.test :refer :all]
             [hylo.core :refer :all]))
-
-(prn *ns*)
-(prn (resolve 'id))
 
 #_(deftest a-test
     (testing "FIXME, I fail."
