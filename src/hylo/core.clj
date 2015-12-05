@@ -59,7 +59,7 @@
     true
 
     (:parent context)
-    (context-contains? (:parent context) k)
+    (recur (:parent context) k)
 
     :else
     false))
@@ -69,12 +69,12 @@
   ([context k]
    (or ((:assumptions context) k)
        (when (:parent context)
-         (context-get (:parent context) k)))))
+         (recur (:parent context) k)))))
 
 (defn context-deref [context k]
   (let [t (context-get context k)]
     (if (= :ref (:class t))
-      (context-deref context (:target t))
+      (recur context (:target t))
       t)))
 
 (defn context-set [context k t]
@@ -103,7 +103,7 @@
   (cond
     (contains? (:assumptions context) a) [a b]
     (contains? (:assumptions context) b) [b a]
-    :else (context-sort (:parent context) a b)))
+    :else (recur (:parent context) a b)))
 
 (declare unify)
 
@@ -130,8 +130,8 @@
   (case [(:class a) (:class b)]
     [:primitive :primitive]
     (if (= (:type a) (:type b)) context
-        (throw (Exception.
-                (str "Type mismatch, expected " (:type a) " found " (:type b)))))
+        (throw (Exception. (str "Type mismatch, expected " (:type a) " found "
+                                (:type b)))))
     [:primitive :ref] (recur context b a)
     [:ref :primitive] (unify-ref context (:target a) b)
     [:ref :ref] (unify-refs context a b)
@@ -196,9 +196,13 @@
 
 (defn type-of-apply [parent-context f args]
   (let [f-type (:type (type-of parent-context f))
-        _ (if-not (and (map? f-type) (= (:class f-type) :fn))
-            (throw (Exception. (str "Cannot apply '" f
-                                    "' of type " [f-type]))))
+
+        f-context (cond (= (:class f-type) :fn)
+                        parent-context
+
+                        :else
+                        (throw (Exception. (str "Cannot apply '" f "' of type "
+                                                [f-type]))))
 
         free-types (->> (:arguments f-type)
                         (filter #(= (:class %) :polymorphic))
@@ -209,7 +213,7 @@
                              free-types))
 
         refs (zipmap (vals mapping) (repeatedly #(mk-ref (gensym))))
-        ctx {:parent parent-context
+        ctx {:parent f-context
              :assumptions
              (into refs (zipmap (map :target (vals refs))
                                 (repeatedly mk-unknown)))}
