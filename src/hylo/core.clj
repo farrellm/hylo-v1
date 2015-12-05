@@ -67,10 +67,9 @@
 (defn context-get
   ([context] (partial context-get context))
   ([context k]
-   (if-let [t ((:assumptions context) k)]
-     (if (= :ref t) (recur context t) t)
-     (if (:parent context)
-       (recur (:parent context) k)))))
+   (or (get-in context [:assumptions k])
+       (if (:parent context)
+         (recur (:parent context) k)))))
 
 (defn context-deref [context k]
   (let [t (context-get context k)]
@@ -198,12 +197,7 @@
 (defn type-of-apply [parent-context f args]
   (let [f-type (:type (type-of parent-context f))
 
-        f-context (cond (= (:class f-type) :fn)
-                        parent-context
-
-                        :else
-                        (throw (Exception. (str "Cannot apply '" f "' of type "
-                                                [f-type]))))
+        f-context parent-context
 
         free-types (->> (:arguments f-type)
                         (filter #(= (:class %) :polymorphic))
