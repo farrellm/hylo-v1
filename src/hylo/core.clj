@@ -16,12 +16,13 @@
    :target tgt})
 
 (defn mk-poly
-  ([lbl] (mk-poly lbl []))
+  ([lbl] {:class :polymorphic
+          :label lbl})
   ([lbl constraints] {:class :polymorphic
                       :label lbl
                       :constraints constraints}))
 (defn mk-unknown
-  ([] (mk-unknown []))
+  ([] {:class :unknown})
   ([constraints] {:class :unknown
                   :constraints constraints}))
 
@@ -85,7 +86,7 @@
         context
 
         (and (= :unknown (:class k-type))
-             (= [] (:constraints k-type)))
+             (-> (:constraints k-type) seq not))
         (assoc-in context [:assumptions k] t)
 
         :else
