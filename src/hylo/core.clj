@@ -65,11 +65,12 @@
     false))
 
 (defn context-get
-  ([context] #(context-get context %))
+  ([context] (partial context-get context))
   ([context k]
-   (or ((:assumptions context) k)
-       (when (:parent context)
-         (recur (:parent context) k)))))
+   (if-let [t ((:assumptions context) k)]
+     (if (= :ref t) (recur context t) t)
+     (if (:parent context)
+       (recur (:parent context) k)))))
 
 (defn context-deref [context k]
   (let [t (context-get context k)]
