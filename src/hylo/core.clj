@@ -1,6 +1,5 @@
 (ns hylo.core
-  (require [clojure.core.match :refer [match]]
-           [clojure.pprint :refer [pprint]]))
+  (require [clojure.pprint :refer [pprint]]))
 
 (defn sqrt [x] (Math/sqrt x))
 (defn id [x] x)
@@ -109,58 +108,33 @@
 
 (defn unify-ref [context tgt b]
   (let [next (context-get context tgt)]
-    (match [next]
-      [{:class :primitive}]
-      (unify context next b)
+    (case (:class next)
+      :primitive (unify context next b)
+      :unknown (context-set context tgt b)
+      :ref (recur context (:target next) b)
+      (throw (Exception. (str "Can't handle ref to " next))))))
 
-      [{:class :unknown, :constraints []}]
-      (context-set context tgt b)
-
-      [{:class :ref, :target tgt-prime}]
-      (recur context tgt-prime b)
-
-      :else
-      (throw (Exception.
-              (str "Can't handle ref to " next))))))
-
-(defn unify-refs [context [a tgt-a :as a-set] [b tgt-b :as b-set]]
-  (match [(context-get context tgt-a) (context-get context tgt-b)]
-    [({:class :ref, :target tgt-a-prime} :as a-prime)
-     {:class :unknown, :constraints []}]
-    (recur context [a-prime tgt-a-prime] b-set)
-
-    ;; [{:class :unknown, :constraints []}
-    ;;  ({:class :ref, :target tgt-a-prime} :as a-prime)]
-    ;; (recur context b-set a-set)
-
-    [({:class :primitive} :as a-prime)
-     {:class :unknown, :constraints []}]
-    (context-set context tgt-b a-prime)
-
-    [{:class :unknown, :constraints []} {:class :unknown, :constraints []}]
-    (context-set context tgt-a b)))
+(defn unify-refs [context a b]
+  (let [tgt-a (:target a)
+        tgt-b (:target b)
+        next-a (context-get context tgt-a)
+        next-b (context-get context tgt-b)]
+    (case [(:class next-a) (:class next-b)]
+      [:ref :unknown] (recur context next-a b)
+      [:primitive :unknown] (context-set context tgt-b next-a)
+      [:unknown :unknown] (context-set context tgt-a b)
+      (throw (Exception. (str "Can't handle refs to " [next-a next-b]))))))
 
 (defn unify [context a b]
-  (match [a b]
-    [{:class :primitive, :type t1} {:class :primitive, :type t2}]
-    (if (= t1 t2) context
+  (case [(:class a) (:class b)]
+    [:primitive :primitive]
+    (if (= (:type a) (:type b)) context
         (throw (Exception.
-                (str "Type mismatch, expected " t1 " found " t2))))
-
-    [{:class :primitive} {:class :ref}]
-    (recur context b a)
-
-    [{:class :ref, :target tgt} {:class :primitive}]
-    (unify-ref context tgt b)
-
-    [{:class :primitive} {:class :ref}]
-    (recur context b a)
-
-    [{:class :ref, :target tgt-a} {:class :ref, :target tgt-b}]
-    (unify-refs context [a tgt-a] [b tgt-b])
-
-    :else
-    (throw (Exception. (str "Could not unify " [a] " with " [b])))))
+                (str "Type mismatch, expected " (:type a) " found " (:type b)))))
+    [:primitive :ref] (recur context b a)
+    [:ref :primitive] (unify-ref context (:target a) b)
+    [:ref :ref] (unify-refs context a b)
+    (throw (Exception. (str "Could not unify " a " with " b)))))
 
 (declare type-of-form)
 (declare type-of-apply)
@@ -205,19 +179,14 @@
           free-mapping (zipmap free type-keywords)
 
           calc-type (fn [t]
-                      (match [t]
-                        [s :guard symbol?]
-                        (recur (context-deref context s))
-
-                        [{:class :primitive}]
-                        t
-
-                        [{:class :ref}]
-                        (recur (context-deref context (:target t)))
-
-                        [{:class :unknown}]
-                        (free-mapping
-                         (some #(and (= t (context-deref context %)) %) free))))]
+                      (if (symbol? t) (recur (context-deref context t))
+                          (case (:class t)
+                            :primitive t
+                            :ref (recur (context-deref context (:target t)))
+                            :unknown
+                            (free-mapping
+                             (some #(and (= t (context-deref context %)) %)
+                                   free)))))]
       {:type (mk-fn (calc-type type) (map calc-type ps))
        :context (:parent context)})
 
