@@ -1,5 +1,7 @@
 (ns hylo.core
-  (require [clojure.pprint :refer [pprint]]))
+  (require [clojure.pprint :refer [pprint]]
+           [clojure.string :refer [join]]
+           [hylo.pprint :refer :all]))
 
 (defn sqrt [x] (Math/sqrt x))
 (defn id [x] x)
@@ -31,6 +33,7 @@
     (map? x) x
     (class? x) (mk-prim x)
     (keyword? x) (mk-poly x)
+    (symbol? x) (mk-ref x)
     :else (throw (Exception. (str "Can't mk-type " x)))))
 
 (defn mk-fn
@@ -68,36 +71,44 @@
   ([context] (partial context-get context))
   ([context k]
    (or (get-in context [:assumptions k])
-       (if (:parent context)
-         (recur (:parent context) k)))))
+       (when-let [parent (:parent context)]
+         (recur parent k)))))
 
 (defn context-deref [context k]
+  "recursively deref a type"
   (let [t (context-get context k)]
     (if (= :ref (:class t))
       (recur context (:target t))
       t)))
 
+(defn context-deref-known [context t]
+  "if type is known, same as context-deref.  for unknown type, return
+   deepest ref"
+  (loop [cur t
+         prev nil]
+    (case (:class cur)
+      :ref     (recur (context-get context (:target cur)) cur)
+      :unknown prev
+      cur)))
+
 (defn context-set [context k t]
-  (cond
-    (contains? (:assumptions context) k)
-    (let [k-type (context-get context k)]
-      (cond
-        (= k-type t)
-        context
+  (if-let [k-type ((:assumptions context) k)]
+    (cond
+      (= k-type t)
+      context
 
-        (and (= :unknown (:class k-type))
-             (-> (:constraints k-type) seq not))
-        (assoc-in context [:assumptions k] t)
+      (and (= :unknown (:class k-type))
+           (empty? (:constraints k-type)))
+      (assoc-in context [:assumptions k] t)
 
-        :else
-        (throw (Exception. (str "Type mismatch: expected " [t]
-                                ", found " [k-type])))))
+      :else
+      (throw (Exception. (str "Type mismatch: expected " [t]
+                              ", found " [k-type]))))
 
-    (:parent context)
-    (update-in context [:parent] context-set k t)
+    (if-let [parent (:parent context)]
+      (assoc context :parent (context-set parent k t))
 
-    :else
-    (throw (Exception. (str "Missing key: " k)))))
+      (throw (Exception. (str "Missing key: " k))))))
 
 (defn context-sort [context a b]
   (cond
@@ -111,8 +122,8 @@
   (let [next (context-get context tgt)]
     (case (:class next)
       :primitive (unify context next b)
-      :unknown (context-set context tgt b)
-      :ref (recur context (:target next) b)
+      :unknown   (context-set context tgt b)
+      :ref       (recur context (:target next) b)
       (throw (Exception. (str "Can't handle ref to " next))))))
 
 (defn unify-refs [context a b]
@@ -121,24 +132,29 @@
         next-a (context-get context tgt-a)
         next-b (context-get context tgt-b)]
     (case [(:class next-a) (:class next-b)]
-      [:ref :unknown] (recur context next-a b)
+      [:ref       :unknown] (recur context next-a b)
       [:primitive :unknown] (context-set context tgt-b next-a)
-      [:unknown :unknown] (context-set context tgt-a b)
+      [:unknown   :unknown] (context-set context tgt-a b)
       (throw (Exception. (str "Can't handle refs to " [next-a next-b]))))))
 
-(defn unify [context a b]
+(defn unify
+  "unify two types.  should never see unknown types here, only refs to
+  unknown"
+  [context a b]
   (case [(:class a) (:class b)]
     [:primitive :primitive]
     (if (= (:type a) (:type b)) context
         (throw (Exception. (str "Type mismatch, expected " (:type a) " found "
                                 (:type b)))))
-    [:primitive :ref] (recur context b a)
-    [:ref :primitive] (unify-ref context (:target a) b)
-    [:ref :ref] (unify-refs context a b)
+    [:primitive :ref]       (recur context b a)
+    [:ref :primitive]       (unify-ref context (:target a) b)
+    [:ref :fn]              (unify-ref context (:target a) b)
+    [:ref :ref]             (unify-refs context a b)
     (throw (Exception. (str "Could not unify " a " with " b)))))
 
 (declare type-of-form)
 (declare type-of-apply)
+(declare type-of-fn)
 
 (defn type-of [context expr]
   (cond (primitive? expr)
@@ -147,10 +163,6 @@
 
         (seq? expr)
         (type-of-form context (first expr) (rest expr))
-
-        (context-contains? context expr)
-        {:type (context-get context expr)
-         :context context}
 
         (and (symbol? expr)
              (context-contains? context (or (resolve expr) expr)))
@@ -163,43 +175,33 @@
 (defn type-of-form [parent-context f args]
   (cond
     (= f 'fn)
-    (let [[ps expr] args
-          mapping (zipmap ps (map #(gensym (str % "_")) ps))
-
-          refs (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
-          ctx {:parent parent-context
-               :assumptions (zipmap (map :target (vals refs))
-                                    (repeatedly mk-unknown))}
-
-          ctx-prime {:parent ctx
-                     :assumptions refs}
-
-          {:keys [type context]} (type-of ctx-prime expr)
-
-          free (remove #(not= :unknown (:class (context-deref context %))) ps)
-          free-mapping (zipmap free type-keywords)
-
-          calc-type (fn [t]
-                      (if (symbol? t) (recur (context-deref context t))
-                          (case (:class t)
-                            :primitive t
-                            :ref (recur (context-deref context (:target t)))
-                            :unknown
-                            (free-mapping
-                             (some #(and (= t (context-deref context %)) %)
-                                   free)))))]
-      {:type (mk-fn (calc-type type) (map calc-type ps))
-       :context (:parent context)})
+    (type-of-fn parent-context args)
 
     :else
     (type-of-apply parent-context f args)))
 
+(defn context-add-fn [context f n-args]
+  (let [ret (gensym "ret_")
+        params (repeatedly n-args (partial gensym "param_"))
+        t (mk-fn ret params)
+        ctx {:parent context
+             :assumptions (into {ret (mk-unknown)}
+                                (map vector
+                                     params
+                                     (repeatedly mk-unknown)))}
+        ctx-prime (unify ctx f t)]
+    [(context-deref ctx-prime (:target f)) ctx-prime]))
+
 (defn type-of-apply [parent-context f args]
-  (let [f-type (:type (type-of parent-context f))
+  (let [{:keys [type context]} (type-of parent-context f)
+        f-type (context-deref-known context type)
 
-        f-context parent-context
+        [f-type f-context] (if (= :ref (:class f-type))
+                             (context-add-fn context f-type (count args))
+                             [f-type context])
 
-        free-types (->> (:arguments f-type)
+        ;; include return type in unknowns
+        free-types (->> (conj (:arguments f-type) (:return f-type))
                         (filter #(= (:class %) :polymorphic))
                         (map :label)
                         (into #{}))
@@ -235,6 +237,49 @@
     {:type (if (= :polymorphic (get-in f-type [:return :class]))
              (->> (get-in f-type [:return :label])
                   mapping
-                  (context-deref ctx-prime))
+                  (context-get ctx-prime)
+                  (context-deref-known ctx-prime))
              (:return f-type))
      :context ctx-prime}))
+
+#_(defn mk-poly-fn [f])
+
+
+
+(defn- calculate-type [context free-mapping type]
+  (loop [t type]
+    (if (symbol? t) (recur (context-deref context t))
+        (case (:class t)
+          :primitive t
+          :ref (recur (context-deref context (:target t)))
+          :fn t
+          :unknown
+          (free-mapping
+           (some #(and (= t (context-deref context %)) %)
+                 (keys free-mapping)))))))
+
+(defn type-of-fn [parent-context [ps expr]]
+  (let [mapping (zipmap ps (map #(gensym (str % "_")) ps))
+
+        refs (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
+        ctx {:parent parent-context
+             :assumptions (zipmap (map :target (vals refs))
+                                  (repeatedly mk-unknown))}
+
+        ctx-prime {:parent ctx
+                   :assumptions refs}
+
+        {:keys [type context]} (type-of ctx-prime expr)
+
+        free (filter #(= :unknown (:class (context-deref context %))) ps)
+        free-mapping (zipmap free type-keywords)
+
+        calc-type (partial calculate-type context free-mapping)]
+    {:type (mk-fn (calc-type type) (map calc-type ps))
+     :context (:parent context)}))
+
+#_(-> (hylo (fn [f x] (sqrt (f x))))
+      :type
+      pretty-type)
+
+;; (pprint-ret (hylo (fn [f x] (sqrt (f x)))))
