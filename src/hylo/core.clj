@@ -251,30 +251,37 @@
     {:type    (mk-fn type (map refs ps))
      :context context}))
 
-#_(defn mk-poly-fn [f])
+(defmulti constituent-types (fn [context type] (:class type)))
 
-(defn- calculate-type [context free-mapping type]
-  (loop [t type]
-    (if (symbol? t) (recur (context-deref context t))
-        (case (:class t)
-          ::primitive t
-          ::ref (recur (context-deref context (:target t)))
-          ::fn t
-          ::unknown
-          (free-mapping
-           (some #(and (= t (context-deref context %)) %)
-                 (keys free-mapping)))))))
+(defmethod constituent-types ::fn [context type]
+  (->> (conj (:parameters type) (:return type))
+       (map (partial context-deref-known context))
+       (mapcat (partial constituent-types context))))
+
+(defmethod constituent-types :default [_ type]
+  [type])
+
+(defn- abstract-poly-type [context free-mapping type]
+  (let [d-type (context-deref-known context type)]
+    (case (:class d-type)
+      ::primitive d-type
+      ::ref       (free-mapping (:target d-type))
+      ::fn        (mk-fn (abstract-poly-type context free-mapping
+                                             (:return d-type))
+                         (map (partial abstract-poly-type context free-mapping)
+                              (:parameters d-type)))
+      (throw (Exception. (str "Unexpected unknown type " type))))))
 
 (defn abstract-poly-fn [{:keys [type context]}]
-  (let [ps (map (partial context-deref-known context)
-                (:parameters type))
+  (let [ps (constituent-types context type)
 
         free (->> (filter #(= ::ref (:class %)) ps)
                   (map :target)
                   distinct)
+
         free-mapping (zipmap free type-keywords)
 
-        calc-type (partial calculate-type context free-mapping)]
+        calc-type (partial abstract-poly-type context free-mapping)]
 
     {:type (mk-fn (calc-type (:return type))
                   (map calc-type (:parameters type)))
@@ -285,7 +292,3 @@
 
 (defmacro hylo-fn [body]
   `(abstract-poly-fn (hylo ~body)))
-
-;; (hylo-fn (fn [f x] (sqrt (f x))))
-;; (pprint-ret (hylo-fn (fn [f x] (sqrt (f x)))))
-;; (prn 0)

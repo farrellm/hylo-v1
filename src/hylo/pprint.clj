@@ -4,20 +4,20 @@
 
 (defn pretty-type [t]
   (case (:class t)
-    :primitive (str (:type t))
-    :fn (str "(" (join " -> " (map pretty-type (:parameters t)))
-             " -> " (pretty-type (:return t)) ")")
-    :polymorphic (:label t)
+    ::hylo.core/primitive   (.getSimpleName (:type t))
+    ::hylo.core/fn          (str "(" (join " -> " (map pretty-type (:parameters t)))
+                                 " -> " (pretty-type (:return t)) ")")
+    ::hylo.core/polymorphic (:label t)
     t))
 
 (defn pretty-context [c]
-  {:parent (if-let [p (:parent c)]
-             (pretty-context p))
+  {:parent      (if-let [p (:parent c)]
+                  (pretty-context p))
    :assumptions (if-let [a (:assumptions c)]
                   (into {} (map #(vector (key %) (pretty-type (val %)))) a))})
 
 (defn pretty-ret [r]
-  {:type (pretty-type (:type r))
+  {:type    (pretty-type (:type r))
    :context (pretty-context (:context r))})
 
 (defn pprint-type [t]
