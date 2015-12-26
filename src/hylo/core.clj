@@ -6,9 +6,6 @@
 (defn sqrt [x] (Math/sqrt x))
 (defn id [x] x)
 
-(defmacro hylo [body]
-  `(type-of root-context '~body))
-
 (defn mk-prim [prim]
   {:class :primitive
    :type prim})
@@ -180,14 +177,8 @@
         (throw (Exception. (str "Unknown type: [" expr "]")))))
 
 (defn type-of-form [parent-context f args]
-  (cond
-    (= f 'fn)
-    (-> (type-of-fn parent-context args)
-        ;; TODO: this is wrong! just to keep tests working until
-        ;; refactoring complete!
-        (abstract-poly-fn args))
-
-    :else
+  (case f
+    'fn (type-of-fn parent-context args)
     (type-of-apply parent-context f args)))
 
 (defn context-add-fn [context f n-args]
@@ -280,7 +271,7 @@
            (some #(and (= t (context-deref context %)) %)
                  (keys free-mapping)))))))
 
-(defn abstract-poly-fn [{:keys [type context]} [ps expr]]
+(defn abstract-poly-fn [{:keys [type context]}]
   (let [ps (map (partial context-deref-known-type context)
                 (:parameters type))
 
@@ -292,6 +283,12 @@
     {:type (mk-fn (calc-type (:return type))
                   (map calc-type (:parameters type)))
      :context (:parent context)}))
+
+(defmacro hylo [body]
+  `(type-of root-context '~body))
+
+(defmacro hylo-fn [body]
+  `(abstract-poly-fn (hylo ~body)))
 
 #_(-> (hylo (fn [f x] (sqrt (f x))))
       :type
