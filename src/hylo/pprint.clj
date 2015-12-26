@@ -5,7 +5,7 @@
 (defn pretty-type [t]
   (case (:class t)
     :primitive (str (:type t))
-    :fn (str "(" (join " -> " (map pretty-type (:arguments t)))
+    :fn (str "(" (join " -> " (map pretty-type (:parameters t)))
              " -> " (pretty-type (:return t)) ")")
     :polymorphic (:label t)
     t))
@@ -17,10 +17,8 @@
                   (into {} (map #(vector (key %) (pretty-type (val %)))) a))})
 
 (defn pretty-ret [r]
-  (let [t (pretty-type (:type r))]
-    {:type (reify Object
-             (toString [_] t))
-     :context (pretty-context (:context r))}))
+  {:type (pretty-type (:type r))
+   :context (pretty-context (:context r))})
 
 (defn pprint-type [t]
   (pprint (pretty-type t)))

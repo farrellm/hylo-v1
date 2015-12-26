@@ -40,7 +40,7 @@
   ([ret args] {:class :fn
                :constraints {}
                :return (mk-type ret)
-               :arguments (map mk-type args)}))
+               :parameters (map mk-type args)}))
 
 (def root-context {:assumptions {#'sqrt (mk-fn Double [Double])
                                  #'id (mk-fn :a [:a])
@@ -75,21 +75,27 @@
          (recur parent k)))))
 
 (defn context-deref [context k]
-  "recursively deref a type"
+  "recursively deref a symbol"
   (let [t (context-get context k)]
     (if (= :ref (:class t))
       (recur context (:target t))
       t)))
 
 (defn context-deref-known [context t]
-  "if type is known, same as context-deref.  for unknown type, return
-   deepest ref"
+  "if type is known, same as context-deref.  for unknown symbol,
+   return deepest ref"
   (loop [cur t
          prev nil]
     (case (:class cur)
       :ref     (recur (context-get context (:target cur)) cur)
       :unknown prev
       cur)))
+
+(defn context-deref-known-type [context t]
+  "if ref, do deref-known; otherwise, self"
+  (if (= :ref (:class t))
+    (context-deref-known context (:target t))
+    t))
 
 (defn context-set [context k t]
   (if-let [k-type ((:assumptions context) k)]
@@ -155,6 +161,7 @@
 (declare type-of-form)
 (declare type-of-apply)
 (declare type-of-fn)
+(declare abstract-poly-fn)
 
 (defn type-of [context expr]
   (cond (primitive? expr)
@@ -175,7 +182,10 @@
 (defn type-of-form [parent-context f args]
   (cond
     (= f 'fn)
-    (type-of-fn parent-context args)
+    (-> (type-of-fn parent-context args)
+        ;; TODO: this is wrong! just to keep tests working until
+        ;; refactoring complete!
+        (abstract-poly-fn args))
 
     :else
     (type-of-apply parent-context f args)))
@@ -201,7 +211,7 @@
                              [f-type context])
 
         ;; include return type in unknowns
-        free-types (->> (conj (:arguments f-type) (:return f-type))
+        free-types (->> (conj (:parameters f-type) (:return f-type))
                         (filter #(= (:class %) :polymorphic))
                         (map :label)
                         (into #{}))
@@ -216,7 +226,7 @@
                                 (repeatedly mk-unknown)))}
 
         param-types (map #(or (mapping (:label %)) %)
-                         (:arguments f-type))
+                         (:parameters f-type))
 
         {:keys [arg-types ctx-prime]}
         (reduce (fn [{:keys [arg-types ctx-prime]} arg]
@@ -242,9 +252,21 @@
              (:return f-type))
      :context ctx-prime}))
 
+(defn type-of-fn [parent-context [ps expr]]
+  (let [refs (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
+        ctx {:parent parent-context
+             :assumptions (zipmap (map :target (vals refs))
+                                  (repeatedly mk-unknown))}
+
+        ctx-prime {:parent ctx
+                   :assumptions refs}
+
+        {:keys [type context]} (type-of ctx-prime expr)]
+
+    {:type    (mk-fn type (map refs ps))
+     :context context}))
+
 #_(defn mk-poly-fn [f])
-
-
 
 (defn- calculate-type [context free-mapping type]
   (loop [t type]
@@ -258,28 +280,24 @@
            (some #(and (= t (context-deref context %)) %)
                  (keys free-mapping)))))))
 
-(defn type-of-fn [parent-context [ps expr]]
-  (let [mapping (zipmap ps (map #(gensym (str % "_")) ps))
+(defn abstract-poly-fn [{:keys [type context]} [ps expr]]
+  (let [ps (map (partial context-deref-known-type context)
+                (:parameters type))
 
-        refs (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
-        ctx {:parent parent-context
-             :assumptions (zipmap (map :target (vals refs))
-                                  (repeatedly mk-unknown))}
-
-        ctx-prime {:parent ctx
-                   :assumptions refs}
-
-        {:keys [type context]} (type-of ctx-prime expr)
-
-        free (filter #(= :unknown (:class (context-deref context %))) ps)
+        free (distinct (filter symbol? ps))
         free-mapping (zipmap free type-keywords)
 
         calc-type (partial calculate-type context free-mapping)]
-    {:type (mk-fn (calc-type type) (map calc-type ps))
+
+    {:type (mk-fn (calc-type (:return type))
+                  (map calc-type (:parameters type)))
      :context (:parent context)}))
 
 #_(-> (hylo (fn [f x] (sqrt (f x))))
       :type
       pretty-type)
 
-;; (pprint-ret (hylo (fn [f x] (sqrt (f x)))))
+#_(pprint-ret (hylo (fn [f x] (sqrt (f x)))))
+
+;; (pprint-ret (hylo (fn [x] x)))
+;; (prn " ")
