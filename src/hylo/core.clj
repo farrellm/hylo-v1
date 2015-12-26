@@ -7,22 +7,22 @@
 (defn id [x] x)
 
 (defn mk-prim [prim]
-  {:class :primitive
+  {:class ::primitive
    :type prim})
 
 (defn mk-ref [tgt]
-  {:class :ref
+  {:class ::ref
    :target tgt})
 
 (defn mk-poly
-  ([lbl] {:class :polymorphic
+  ([lbl] {:class ::polymorphic
           :label lbl})
-  ([lbl constraints] {:class :polymorphic
+  ([lbl constraints] {:class ::polymorphic
                       :label lbl
                       :constraints constraints}))
 (defn mk-unknown
-  ([] {:class :unknown})
-  ([constraints] {:class :unknown
+  ([] {:class ::unknown})
+  ([constraints] {:class ::unknown
                   :constraints constraints}))
 
 (defn mk-type [x]
@@ -34,7 +34,7 @@
     :else (throw (Exception. (str "Can't mk-type " x)))))
 
 (defn mk-fn
-  ([ret args] {:class :fn
+  ([ret args] {:class ::fn
                :constraints {}
                :return (mk-type ret)
                :parameters (map mk-type args)}))
@@ -74,7 +74,7 @@
 (defn context-deref [context k]
   "recursively deref a symbol"
   (let [t (context-get context k)]
-    (if (= :ref (:class t))
+    (if (= ::ref (:class t))
       (recur context (:target t))
       t)))
 
@@ -84,15 +84,9 @@
   (loop [cur t
          prev nil]
     (case (:class cur)
-      :ref     (recur (context-get context (:target cur)) cur)
-      :unknown prev
+      ::ref     (recur (context-get context (:target cur)) cur)
+      ::unknown prev
       cur)))
-
-(defn context-deref-known-type [context t]
-  "if ref, do deref-known; otherwise, self"
-  (if (= :ref (:class t))
-    (context-deref-known context (:target t))
-    t))
 
 (defn context-set [context k t]
   (if-let [k-type ((:assumptions context) k)]
@@ -100,7 +94,7 @@
       (= k-type t)
       context
 
-      (and (= :unknown (:class k-type))
+      (and (= ::unknown (:class k-type))
            (empty? (:constraints k-type)))
       (assoc-in context [:assumptions k] t)
 
@@ -124,9 +118,9 @@
 (defn unify-ref [context tgt b]
   (let [next (context-get context tgt)]
     (case (:class next)
-      :primitive (unify context next b)
-      :unknown   (context-set context tgt b)
-      :ref       (recur context (:target next) b)
+      ::primitive (unify context next b)
+      ::unknown   (context-set context tgt b)
+      ::ref       (recur context (:target next) b)
       (throw (Exception. (str "Can't handle ref to " next))))))
 
 (defn unify-refs [context a b]
@@ -135,9 +129,9 @@
         next-a (context-get context tgt-a)
         next-b (context-get context tgt-b)]
     (case [(:class next-a) (:class next-b)]
-      [:ref       :unknown] (recur context next-a b)
-      [:primitive :unknown] (context-set context tgt-b next-a)
-      [:unknown   :unknown] (context-set context tgt-a b)
+      [::ref       ::unknown] (recur context next-a b)
+      [::primitive ::unknown] (context-set context tgt-b next-a)
+      [::unknown   ::unknown] (context-set context tgt-a b)
       (throw (Exception. (str "Can't handle refs to " [next-a next-b]))))))
 
 (defn unify
@@ -145,14 +139,14 @@
   unknown"
   [context a b]
   (case [(:class a) (:class b)]
-    [:primitive :primitive]
+    [::primitive ::primitive]
     (if (= (:type a) (:type b)) context
-        (throw (Exception. (str "Type mismatch, expected " (:type a) " found "
-                                (:type b)))))
-    [:primitive :ref]       (recur context b a)
-    [:ref :primitive]       (unify-ref context (:target a) b)
-    [:ref :fn]              (unify-ref context (:target a) b)
-    [:ref :ref]             (unify-refs context a b)
+        (throw (Exception. (str "Type mismatch, expected " (:type a)
+                                " found " (:type b)))))
+    [::primitive ::ref]       (recur context b a)
+    [::ref ::primitive]       (unify-ref context (:target a) b)
+    [::ref ::fn]              (unify-ref context (:target a) b)
+    [::ref ::ref]             (unify-refs context a b)
     (throw (Exception. (str "Could not unify " a " with " b)))))
 
 (declare type-of-form)
@@ -197,13 +191,13 @@
   (let [{:keys [type context]} (type-of parent-context f)
         f-type (context-deref-known context type)
 
-        [f-type f-context] (if (= :ref (:class f-type))
+        [f-type f-context] (if (= ::ref (:class f-type))
                              (context-add-fn context f-type (count args))
                              [f-type context])
 
         ;; include return type in unknowns
         free-types (->> (conj (:parameters f-type) (:return f-type))
-                        (filter #(= (:class %) :polymorphic))
+                        (filter #(= (:class %) ::polymorphic))
                         (map :label)
                         (into #{}))
         mapping (zipmap free-types
@@ -235,7 +229,7 @@
                    ctx-prime
                    (map vector param-types arg-types))]
 
-    {:type (if (= :polymorphic (get-in f-type [:return :class]))
+    {:type (if (= ::polymorphic (get-in f-type [:return :class]))
              (->> (get-in f-type [:return :label])
                   mapping
                   (context-get ctx-prime)
@@ -263,19 +257,21 @@
   (loop [t type]
     (if (symbol? t) (recur (context-deref context t))
         (case (:class t)
-          :primitive t
-          :ref (recur (context-deref context (:target t)))
-          :fn t
-          :unknown
+          ::primitive t
+          ::ref (recur (context-deref context (:target t)))
+          ::fn t
+          ::unknown
           (free-mapping
            (some #(and (= t (context-deref context %)) %)
                  (keys free-mapping)))))))
 
 (defn abstract-poly-fn [{:keys [type context]}]
-  (let [ps (map (partial context-deref-known-type context)
+  (let [ps (map (partial context-deref-known context)
                 (:parameters type))
 
-        free (distinct (filter symbol? ps))
+        free (->> (filter #(= ::ref (:class %)) ps)
+                  (map :target)
+                  distinct)
         free-mapping (zipmap free type-keywords)
 
         calc-type (partial calculate-type context free-mapping)]
@@ -290,11 +286,6 @@
 (defmacro hylo-fn [body]
   `(abstract-poly-fn (hylo ~body)))
 
-#_(-> (hylo (fn [f x] (sqrt (f x))))
-      :type
-      pretty-type)
-
-#_(pprint-ret (hylo (fn [f x] (sqrt (f x)))))
-
-;; (pprint-ret (hylo (fn [x] x)))
-;; (prn " ")
+;; (hylo-fn (fn [f x] (sqrt (f x))))
+;; (pprint-ret (hylo-fn (fn [f x] (sqrt (f x)))))
+;; (prn 0)
