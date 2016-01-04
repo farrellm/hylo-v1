@@ -179,10 +179,11 @@
       [f-type context])))
 
 (defn type-of-apply [context f args]
-  (let [[f-type f-context] (type-of-function context f (count args))
+  (let [[f-type context] (type-of-function context f (count args))
+        rtn (:return f-type)
 
         ;; include return type in unknowns
-        free-types (->> (conj (:parameters f-type) (:return f-type))
+        free-types (->> (conj (:parameters f-type) rtn)
                         (filter #(= (:class %) ::polymorphic))
                         (map :label)
                         (into #{}))
@@ -191,13 +192,10 @@
                              free-types))
 
         refs (zipmap (vals mapping) (repeatedly #(mk-ref (gensym))))
-        context {:parent f-context
+        context {:parent context
                  :assumptions
                  (into refs (zipmap (map :target (vals refs))
                                     (repeatedly mk-unknown)))}
-
-        param-types (map #(or (mapping (:label %)) %)
-                         (:parameters f-type))
 
         {:keys [arg-types context]}
         (reduce (fn [{:keys [arg-types context]} arg]
@@ -210,28 +208,25 @@
 
         context (reduce
                  (fn [c [p a]]
-                   (unify c (if (symbol? p) (context-get c p) p)
-                          a))
+                   (unify c (or (some->> (:label p) mapping refs) p) a))
                  context
-                 (map vector param-types arg-types))]
+                 (map vector (:parameters f-type) arg-types))]
 
-    {:type (if (= ::polymorphic (get-in f-type [:return :class]))
-             (->> (get-in f-type [:return :label])
-                  mapping
-                  (context-get context)
-                  (context-deref context))
-             (:return f-type))
+    {:type (or (some->> (:label rtn)
+                        mapping
+                        refs
+                        (context-deref context))
+               rtn)
      :context context}))
 
 (defn type-of-fn [context [ps expr]]
-  (let [refs      (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
-        bindings  (map :target (vals refs))
-        context       {:parent context
-                       :assumptions (zipmap bindings
-                                            (repeatedly mk-unknown))}
-
-        context {:parent context
-                 :assumptions refs}
+  (let [refs     (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
+        bindings (map :target (vals refs))
+        context  {:parent context
+                  :assumptions (zipmap bindings
+                                       (repeatedly mk-unknown))}
+        context  {:parent context
+                  :assumptions refs}
 
         {:keys [type context]} (type-of context expr)]
 
