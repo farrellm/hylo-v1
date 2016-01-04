@@ -3,9 +3,6 @@
            [clojure.string :refer [join]]
            [hylo.pprint :refer :all]))
 
-(defn sqrt [x] (Math/sqrt x))
-(defn id [x] x)
-
 (defn mk-prim [prim]
   {:class ::primitive
    :type prim})
@@ -27,21 +24,22 @@
 
 (defn mk-type [x]
   (cond
-    (map? x) x
-    (class? x) (mk-prim x)
+    (map? x)     x
+    (class? x)   (mk-prim x)
     (keyword? x) (mk-poly x)
-    (symbol? x) (mk-ref x)
-    :else (throw (Exception. (str "Can't mk-type " x)))))
+    (symbol? x)  (mk-ref x)
+    :else        (throw (Exception. (str "Can't mk-type " x)))))
 
 (defn mk-fn
-  ([ret args] {:class ::fn
+  ([ret args] {:class       ::fn
                :constraints {}
-               :return (mk-type ret)
-               :parameters (map mk-type args)}))
+               :return      (mk-type ret)
+               :parameters  (map mk-type args)}))
 
-(def root-context {:assumptions {#'sqrt (mk-fn Double [Double])
-                                 #'id (mk-fn :a [:a])
-                                 'if (mk-fn :a [Boolean :a :a])
+(def root-context {:assumptions {'Math/sqrt (mk-fn Double [Double])
+                                 #'identity  (mk-fn :a [:a])
+                                 #'*         (mk-fn Double [Double Double])
+                                 'if         (mk-fn :a [Boolean :a :a])
                                  }})
 
 (def type-keywords
@@ -54,15 +52,9 @@
       (keyword? expr)))
 
 (defn context-contains? [context k]
-  (cond
-    (contains? (:assumptions context) k)
-    true
-
-    (:parent context)
-    (recur (:parent context) k)
-
-    :else
-    false))
+  (or (contains? (:assumptions context) k)
+      (when-let [parent (:parent context)]
+        (recur parent k))))
 
 (defn context-get
   ([context] (partial context-get context))
@@ -71,16 +63,8 @@
        (when-let [parent (:parent context)]
          (recur parent k)))))
 
-(defn context-deref [context k]
-  "recursively deref a symbol"
-  (let [t (context-get context k)]
-    (if (= ::ref (:class t))
-      (recur context (:target t))
-      t)))
-
-(defn context-deref-known [context t]
-  "if type is known, same as context-deref.  for unknown symbol,
-   return deepest ref"
+(defn context-deref [context t]
+  "recursively deref a symbol; for unknown symbol, return deepest ref"
   (loop [cur t
          prev nil]
     (case (:class cur)
@@ -170,30 +154,32 @@
         :else
         (throw (Exception. (str "Unknown type: [" expr "]")))))
 
-(defn type-of-form [parent-context f args]
+(defn type-of-form [context f args]
   (case f
-    'fn (type-of-fn parent-context args)
-    (type-of-apply parent-context f args)))
+    'fn (type-of-fn context args)
+    (type-of-apply context f args)))
 
 (defn context-add-fn [context f n-args]
   (let [ret (gensym "ret_")
         params (repeatedly n-args (partial gensym "param_"))
         t (mk-fn ret params)
-        ctx {:parent context
-             :assumptions (into {ret (mk-unknown)}
-                                (map vector
-                                     params
-                                     (repeatedly mk-unknown)))}
-        ctx-prime (unify ctx f t)]
-    [(context-deref ctx-prime (:target f)) ctx-prime]))
+        context {:parent context
+                 :assumptions (into {ret (mk-unknown)}
+                                    (map vector
+                                         params
+                                         (repeatedly mk-unknown)))}
+        context (unify context f t)]
+    [(context-deref context f) context]))
 
-(defn type-of-apply [parent-context f args]
-  (let [{:keys [type context]} (type-of parent-context f)
-        f-type (context-deref-known context type)
+(defn type-of-function [context f n-args]
+  (let [{:keys [type context]} (type-of context f)
+        f-type (context-deref context type)]
+    (if (= ::ref (:class f-type))
+      (context-add-fn context f-type n-args)
+      [f-type context])))
 
-        [f-type f-context] (if (= ::ref (:class f-type))
-                             (context-add-fn context f-type (count args))
-                             [f-type context])
+(defn type-of-apply [context f args]
+  (let [[f-type f-context] (type-of-function context f (count args))
 
         ;; include return type in unknowns
         free-types (->> (conj (:parameters f-type) (:return f-type))
@@ -201,52 +187,53 @@
                         (map :label)
                         (into #{}))
         mapping (zipmap free-types
-                        (map #(gensym (str f "_"(name %) "_"))
+                        (map #(gensym (str f "_" (name %) "_"))
                              free-types))
 
         refs (zipmap (vals mapping) (repeatedly #(mk-ref (gensym))))
-        ctx {:parent f-context
-             :assumptions
-             (into refs (zipmap (map :target (vals refs))
-                                (repeatedly mk-unknown)))}
+        context {:parent f-context
+                 :assumptions
+                 (into refs (zipmap (map :target (vals refs))
+                                    (repeatedly mk-unknown)))}
 
         param-types (map #(or (mapping (:label %)) %)
                          (:parameters f-type))
 
-        {:keys [arg-types ctx-prime]}
-        (reduce (fn [{:keys [arg-types ctx-prime]} arg]
-                  (let [{:keys [type context]} (type-of ctx-prime arg)]
+        {:keys [arg-types context]}
+        (reduce (fn [{:keys [arg-types context]} arg]
+                  (let [{:keys [type context]} (type-of context arg)]
                     {:arg-types (conj arg-types type)
-                     :ctx-prime context}))
-                {:ctx-prime ctx
+                     :context context}))
+                {:context context
                  :arg-types []}
                 args)
 
-        ctx-prime (reduce
-                   (fn [c [p a]]
-                     (unify c (if (symbol? p) (context-get c p) p)
-                            a))
-                   ctx-prime
-                   (map vector param-types arg-types))]
+        context (reduce
+                 (fn [c [p a]]
+                   (unify c (if (symbol? p) (context-get c p) p)
+                          a))
+                 context
+                 (map vector param-types arg-types))]
 
     {:type (if (= ::polymorphic (get-in f-type [:return :class]))
              (->> (get-in f-type [:return :label])
                   mapping
-                  (context-get ctx-prime)
-                  (context-deref-known ctx-prime))
+                  (context-get context)
+                  (context-deref context))
              (:return f-type))
-     :context ctx-prime}))
+     :context context}))
 
-(defn type-of-fn [parent-context [ps expr]]
-  (let [refs (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
-        ctx {:parent parent-context
-             :assumptions (zipmap (map :target (vals refs))
-                                  (repeatedly mk-unknown))}
+(defn type-of-fn [context [ps expr]]
+  (let [refs      (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
+        bindings  (map :target (vals refs))
+        context       {:parent context
+                       :assumptions (zipmap bindings
+                                            (repeatedly mk-unknown))}
 
-        ctx-prime {:parent ctx
-                   :assumptions refs}
+        context {:parent context
+                 :assumptions refs}
 
-        {:keys [type context]} (type-of ctx-prime expr)]
+        {:keys [type context]} (type-of context expr)]
 
     {:type    (mk-fn type (map refs ps))
      :context context}))
@@ -255,14 +242,14 @@
 
 (defmethod constituent-types ::fn [context type]
   (->> (conj (:parameters type) (:return type))
-       (map (partial context-deref-known context))
+       (map (partial context-deref context))
        (mapcat (partial constituent-types context))))
 
 (defmethod constituent-types :default [_ type]
   [type])
 
 (defn- abstract-poly-type [context free-mapping type]
-  (let [d-type (context-deref-known context type)]
+  (let [d-type (context-deref context type)]
     (case (:class d-type)
       ::primitive d-type
       ::ref       (free-mapping (:target d-type))
