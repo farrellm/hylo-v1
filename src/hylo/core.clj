@@ -17,6 +17,7 @@
   ([lbl constraints] {:class ::polymorphic
                       :label lbl
                       :constraints constraints}))
+
 (defn mk-unknown
   ([] {:class ::unknown})
   ([constraints] {:class ::unknown
@@ -32,6 +33,11 @@
 
 (defn mk-fn
   ([ret args] {:class       ::fn
+               :return      (mk-type ret)
+               :parameters  (map mk-type args)}))
+
+(defn mk-poly-fn
+  ([ret args] {:class       ::poly-fn
                :constraints {}
                :return      (mk-type ret)
                :parameters  (map mk-type args)}))
@@ -141,6 +147,7 @@
 (defn type-of [context expr]
   (cond (primitive? expr)
         {:type (mk-prim (class expr))
+         :ast expr
          :context context}
 
         (seq? expr)
@@ -149,6 +156,7 @@
         (and (symbol? expr)
              (context-contains? context (or (resolve expr) expr)))
         {:type (context-get context (or (resolve expr) expr))
+         :ast expr
          :context context}
 
         :else
@@ -159,7 +167,7 @@
     'fn (type-of-fn context args)
     (type-of-apply context f args)))
 
-(defn context-add-fn [context f n-args]
+(defn context-add-fn [context f n-args ast]
   (let [ret (gensym "ret_")
         params (repeatedly n-args (partial gensym "param_"))
         t (mk-fn ret params)
@@ -169,17 +177,17 @@
                                          params
                                          (repeatedly mk-unknown)))}
         context (unify context f t)]
-    [(context-deref context f) context]))
+    [(context-deref context f) ast context]))
 
 (defn type-of-function [context f n-args]
-  (let [{:keys [type context]} (type-of context f)
+  (let [{:keys [type ast context]} (type-of context f)
         f-type (context-deref context type)]
     (if (= ::ref (:class f-type))
-      (context-add-fn context f-type n-args)
-      [f-type context])))
+      (context-add-fn context f-type n-args ast)
+      [f-type ast context])))
 
 (defn type-of-apply [context f args]
-  (let [[f-type context] (type-of-function context f (count args))
+  (let [[f-type f-ast context] (type-of-function context f (count args))
         rtn (:return f-type)
 
         ;; include return type in unknowns
@@ -197,13 +205,15 @@
                  (into refs (zipmap (map :target (vals refs))
                                     (repeatedly mk-unknown)))}
 
-        {:keys [arg-types context]}
-        (reduce (fn [{:keys [arg-types context]} arg]
-                  (let [{:keys [type context]} (type-of context arg)]
+        {:keys [arg-types arg-ast context]}
+        (reduce (fn [{:keys [arg-types arg-ast context]} arg]
+                  (let [{:keys [type ast context]} (type-of context arg)]
                     {:arg-types (conj arg-types type)
+                     :arg-ast (conj arg-ast ast)
                      :context context}))
                 {:context context
-                 :arg-types []}
+                 :arg-types []
+                 :arg-ast []}
                 args)
 
         context (reduce
@@ -217,6 +227,7 @@
                         refs
                         (context-deref context))
                rtn)
+     :ast `(~f-ast ~@arg-ast)
      :context context}))
 
 (defn type-of-fn [context [ps expr]]
@@ -228,9 +239,10 @@
         context  {:parent context
                   :assumptions refs}
 
-        {:keys [type context]} (type-of context expr)]
+        {:keys [type ast context]} (type-of context expr)]
 
     {:type    (mk-fn type (map refs ps))
+     :ast     `(:fn [~@ps] ~ast)
      :context context}))
 
 (defmulti constituent-types (fn [context type] (:class type)))
@@ -254,7 +266,7 @@
                               (:parameters d-type)))
       (throw (Exception. (str "Unexpected unknown type " type))))))
 
-(defn abstract-poly-fn [{:keys [type context]}]
+(defn abstract-poly-fn [{:keys [type ast context]}]
   (let [ps (constituent-types context type)
 
         free (->> (filter #(= ::ref (:class %)) ps)
@@ -263,11 +275,18 @@
 
         free-mapping (zipmap free type-keywords)
 
-        calc-type (partial abstract-poly-type context free-mapping)]
+        calc-type (partial abstract-poly-type context free-mapping)
 
-    {:type (mk-fn (calc-type (:return type))
-                  (map calc-type (:parameters type)))
-     :context (:parent context)}))
+        rtn (calc-type (:return type))
+        args (map calc-type (:parameters type))]
+
+    (if (empty? free)
+      {:type (mk-fn rtn args)
+       :ast ast
+       :context context}
+      {:type (mk-poly-fn rtn args)
+       :ast `(:poly-fn [~@free] ~ast)
+       :context context})))
 
 (defmacro hylo [body]
   `(type-of root-context '~body))

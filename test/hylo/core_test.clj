@@ -23,15 +23,24 @@
   (is (= (mk-prim clojure.lang.Keyword) (:type (hylo (if true :a :b))))))
 
 (deftest function
-  (is (= (mk-fn :a [:a])
+  (is (= (mk-poly-fn :a [:a])
          (:type (hylo-fn (fn [x] x)))))
   (is (= (mk-fn Double [Double])
          (:type (hylo-fn (fn [x] (Math/sqrt x))))))
-  (is (= (mk-fn :a [:a :a])
+  (is (= (mk-poly-fn :a [:a :a])
          (:type (hylo-fn (fn [x y] (if true x y))))))
   (is (= (mk-fn Double [Double Double Boolean])
          (:type (hylo-fn (fn [x y z] (if z x (Math/sqrt y)))))))
   (is (= (mk-fn Double [Double Double Boolean])
          (:type (hylo-fn (fn [x y z] (if z (Math/sqrt y) x))))))
-  (is (= (mk-fn Double [(mk-fn Double [:a]) :a])
+  (is (= (mk-poly-fn Double [(mk-fn Double [:a]) :a])
          (:type (hylo-fn (fn [f x] (Math/sqrt (f x))))))))
+
+(deftest ast
+  (is (= 8 (:ast (hylo 8))))
+  (is (= 'if (:ast (hylo if))))
+  (is (= '(:fn [x] x) (:ast (hylo (fn [x] x)))))
+  (is (= '(:fn [x] (Math/sqrt x)) (:ast (hylo (fn [x] (Math/sqrt x))))))
+  (is (= '(:fn [x] (Math/sqrt x)) (:ast (hylo-fn (fn [x] (Math/sqrt x))))))
+  (is (= :poly-fn (first (:ast (hylo-fn (fn [x] x))))))
+  (is (= '(:fn [x] x) (last (:ast (hylo-fn (fn [x] x)))))))
