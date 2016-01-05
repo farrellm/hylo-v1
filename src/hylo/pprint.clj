@@ -5,9 +5,9 @@
 (defn pretty-type [t]
   (case (:class t)
     ::hylo.core/primitive   (.getSimpleName (:type t))
-    ::hylo.core/fn          (str "(" (join " -> "
-                                           (map pretty-type (:parameters t)))
-                                 " -> " (pretty-type (:return t)) ")")
+    ::hylo.core/fn          (let [ts (map pretty-type (concat (:parameters t)
+                                                              [(:return t)]))]
+                              (str "(" (join " -> " ts) ")"))
     ::hylo.core/polymorphic (:label t)
     t))
 
@@ -19,6 +19,7 @@
 
 (defn pretty-ret [r]
   {:type    (pretty-type (:type r))
+   :ast     (:ast r)
    :context (pretty-context (:context r))})
 
 (defn pprint-type [t]
