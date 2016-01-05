@@ -241,7 +241,8 @@
 
         {:keys [type ast context]} (type-of context expr)]
 
-    {:type    (mk-fn type (map refs ps))
+    {:type    (mk-fn (context-deref context type)
+                     (map (comp (partial context-deref context) refs) ps))
      :ast     `(:fn [~@ps] ~ast)
      :context context}))
 
