@@ -9,6 +9,8 @@
                                                               [(:return t)]))]
                               (str "(" (join " -> " ts) ")"))
     ::hylo.core/polymorphic (:label t)
+    ::hylo.core/adt         (str (join " " (cons (name (:adt t))
+                                                 (map pretty-type (:types t)))) )
     t))
 
 (defn pretty-context [c]

@@ -42,6 +42,11 @@
                :return      (mk-type ret)
                :parameters  (map mk-type args)}))
 
+(defn mk-adt [adt types]
+  {:class ::adt
+   :adt adt
+   :types (map mk-type types)})
+
 (def root-context {:assumptions {'Math/sqrt (mk-fn Double [Double])
                                  #'identity  (mk-fn :a [:a])
                                  #'*         (mk-fn Double [Double Double])
@@ -69,6 +74,9 @@
        (when-let [parent (:parent context)]
          (recur parent k)))))
 
+(defn- context-deref-adt [context t]
+  (assoc ))
+
 (defn context-deref [context t]
   "recursively deref a symbol; for unknown symbol, return deepest ref"
   (loop [cur t
@@ -76,6 +84,12 @@
     (case (:class cur)
       ::ref     (recur (context-get context (:target cur)) cur)
       ::unknown prev
+      ::adt     (update cur :types
+                        (partial map (partial context-deref context)))
+      ::fn      (-> cur
+                    (update :return (partial context-deref context))
+                    (update cur :parameters
+                            (partial map (partial context-deref context))))
       cur)))
 
 (defn context-set [context k t]
@@ -126,6 +140,18 @@
       [::unknown   ::fn]      (unify context a next-b)
       (throw (Exception. (str "Can't handle refs to " [next-a next-b]))))))
 
+(defn unify-all [context as bs]
+  (reduce (fn [c [a b]]
+            (unify c a b))
+          context
+          (map vector as bs)))
+
+(defn unify-adts [context a b]
+  (when-not (= (:adt a) (:adt b))
+    (throw (Exception. (str "Type mismatch, expected " (:adt a)
+                            " found " (:adt b)))))
+  (unify-all context (:types a) (:types b)))
+
 (defn unify
   "unify two types.  should never see unknown types here, only refs to
   unknown"
@@ -139,6 +165,7 @@
     [::ref ::primitive]       (unify-ref context (:target a) b)
     [::ref ::fn]              (unify-ref context (:target a) b)
     [::ref ::ref]             (unify-refs context a b)
+    [::adt ::adt]             (unify-adts context a b)
     (throw (Exception. (str "Could not unify " a " with " b)))))
 
 (declare type-of-form)
@@ -188,24 +215,62 @@
       (context-add-fn context f-type n-args ast)
       [f-type ast context])))
 
+(defmulti constituent-types (fn [context type] (:class type)))
+
+(defmethod constituent-types ::fn [context type]
+  (->> (conj (:parameters type) (:return type))
+       (map (partial context-deref context))
+       (mapcat (partial constituent-types context))))
+
+(defmethod constituent-types ::adt [context adt]
+  (->> (:types adt)
+       (map (partial context-deref context))
+       (mapcat (partial constituent-types context))))
+
+(defmethod constituent-types :default [_ type]
+  [type])
+
+(def fix-poly-type nil)
+
+(defmulti fix-poly-type (fn [ref-mapping type] (:class type)))
+
+(defmethod fix-poly-type ::polymorphic [ref-mapping type]
+  (ref-mapping (:label type)))
+
+(defmethod fix-poly-type ::adt [ref-mapping type]
+  (assoc type :types (map (fn [t]
+                            (or (some-> (:label t) ref-mapping)
+                                (fix-poly-type t ref-mapping)))
+                          (:types type))))
+
+(defmethod fix-poly-type :default [_ type]
+  type)
+
 (defn type-of-apply [context f args]
   (let [[f-type f-ast context] (type-of-function context f (count args))
         rtn (:return f-type)
+        params (:parameters f-type)
 
         ;; include return type in unknowns
-        free-types (->> (conj (:parameters f-type) rtn)
+        free-types (->> (concat (mapcat (partial constituent-types context)
+                                        params)
+                                (constituent-types context rtn))
                         (filter #(= (:class %) ::polymorphic))
                         (map :label)
                         (into #{}))
         mapping (zipmap free-types
                         (map #(gensym (str f "_" (name %) "_"))
                              free-types))
-
         refs (zipmap (vals mapping) (repeatedly #(mk-ref (gensym))))
+        ref-mapping (comp refs mapping)
+
         context {:parent context
                  :assumptions
                  (into refs (zipmap (map :target (vals refs))
                                     (repeatedly mk-unknown)))}
+
+        rtn (fix-poly-type ref-mapping rtn)
+        params (map (partial fix-poly-type ref-mapping) params)
 
         {:keys [arg-types arg-ast context]}
         (reduce (fn [{:keys [arg-types arg-ast context]} arg]
@@ -218,17 +283,9 @@
                  :arg-ast []}
                 args)
 
-        context (reduce
-                 (fn [c [p a]]
-                   (unify c (or (some->> (:label p) mapping refs) p) a))
-                 context
-                 (map vector (:parameters f-type) arg-types))]
+        context (unify-all context params arg-types)]
 
-    {:type (or (some->> (:label rtn)
-                        mapping
-                        refs
-                        (context-deref context))
-               rtn)
+    {:type (context-deref context rtn)
      :ast `(~f-ast ~@arg-ast)
      :context context}))
 
@@ -251,16 +308,6 @@
                      (map (comp (partial context-deref context) refs) ps))
      :ast     `(:fn [~@ps] ~ast)
      :context (context-excise context refs)}))
-
-(defmulti constituent-types (fn [context type] (:class type)))
-
-(defmethod constituent-types ::fn [context type]
-  (->> (conj (:parameters type) (:return type))
-       (map (partial context-deref context))
-       (mapcat (partial constituent-types context))))
-
-(defmethod constituent-types :default [_ type]
-  [type])
 
 (defn- abstract-poly-type [context free-mapping type]
   (let [d-type (context-deref context type)]
