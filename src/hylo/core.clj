@@ -31,10 +31,10 @@
     (symbol? x)  (mk-ref x)
     :else        (throw (Exception. (str "Can't mk-type " x)))))
 
-(defn mk-fn
-  ([ret args] {:class       ::fn
-               :return      (mk-type ret)
-               :parameters  (map mk-type args)}))
+(defn mk-fn [ret args]
+  {:class       ::fn
+   :return      (mk-type ret)
+   :parameters  (map mk-type args)})
 
 (defn mk-poly-fn
   ([ret args] {:class       ::poly-fn
@@ -122,6 +122,8 @@
       [::ref       ::unknown] (recur context next-a b)
       [::primitive ::unknown] (context-set context tgt-b next-a)
       [::unknown   ::unknown] (context-set context tgt-a b)
+      [::fn        ::unknown] (recur context b a)
+      [::unknown   ::fn]      (unify context a next-b)
       (throw (Exception. (str "Can't handle refs to " [next-a next-b]))))))
 
 (defn unify
@@ -230,6 +232,11 @@
      :ast `(~f-ast ~@arg-ast)
      :context context}))
 
+(defn context-excise [context assump]
+  (if (= (:assumptions context) assump)
+    (:parent context)
+    (assoc context :parent (context-excise (:parent context) assump))))
+
 (defn type-of-fn [context [ps expr]]
   (let [refs     (zipmap ps (map #(mk-ref (gensym (str % "_"))) ps))
         bindings (map :target (vals refs))
@@ -240,11 +247,10 @@
                   :assumptions refs}
 
         {:keys [type ast context]} (type-of context expr)]
-
     {:type    (mk-fn (context-deref context type)
                      (map (comp (partial context-deref context) refs) ps))
      :ast     `(:fn [~@ps] ~ast)
-     :context context}))
+     :context (context-excise context refs)}))
 
 (defmulti constituent-types (fn [context type] (:class type)))
 
